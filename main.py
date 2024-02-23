@@ -1,3 +1,4 @@
+import json
 import sys
 import os
 from functools import partial
@@ -5,6 +6,7 @@ from functools import partial
 import pandas as pd
 import numpy as np
 import tensorflow as tf
+import gzip
 
 tf.get_logger().setLevel('ERROR')  # only show error messages
 
@@ -29,23 +31,64 @@ MOVIELENS_DATA_SIZE = '100k'
 
 # Model parameters
 EPOCHS = 50
-BATCH_SIZE = 1024
+BATCH_SIZE = 100000  # original 1024
 
 SEED = DEFAULT_SEED  # Set None for non-deterministic results
 
 yaml_file = "C:/Users/Lukas/Desktop/studienarbeit/lightgcn.yaml"
-user_file = "../../tests/resources/deeprec/lightgcn/user_embeddings.csv"
-item_file = "../../tests/resources/deeprec/lightgcn/item_embeddings.csv"
+user_file = "C:/Users/Lukas/Desktop/studienarbeit/user_embeddings.csv"
+item_file = "C:/Users/Lukas/Desktop/studienarbeit/item_embeddings.csv"
+amazon_auto_file = "C:/Users/Lukas/Desktop/studienarbeit/qa_Automotive.json.gz"
+google_local_reviews_small_alabama = "C:/Users/Lukas/Desktop/studienarbeit/review-Alaska_10.json.gz"
+
 
 if __name__ == '__main__':
-    df = movielens.load_pandas_df(size=MOVIELENS_DATA_SIZE)
+    df_default = movielens.load_pandas_df(size=MOVIELENS_DATA_SIZE)
 
-    df.head()
+    df_default.head()
+
+
+    def parse_amazon(path):
+        g = gzip.open(path, 'rb')
+        for l in g:
+            yield eval(l)
+
+
+    def getDF(path):
+        i = 0
+        df = {}
+        for d in parse_amazon(path):
+            df[i] = d
+            i += 1
+        return pd.DataFrame.from_dict(df, orient='index')
+
+
+    def parse_google(path):
+        g = gzip.open(path, 'r')
+        for l in g:
+            yield json.loads(l)
+
+    def get_df_google(path):
+        i = 0
+        df = {}
+        for d in parse_google(path):
+            df[i] = d
+            i += 1
+        return pd.DataFrame.from_dict(df, orient='index')
+
+    df_amazon = getDF(amazon_auto_file)
+
+    df_google = get_df_google(google_local_reviews_small_alabama)
+    df_google.rename(columns={"user_id": "userID", "gmap_id": "itemID"}, inplace=True)
+
     # Split data set into two parts train
     # all users are in both train and test datasets
-    train, test = python_stratified_split(df, ratio=0.75)
-    data = ImplicitCF(train=train, test=test, seed=SEED)
-
+    train_g, test_g = python_stratified_split(df_google, ratio=0.75, col_user="userID", col_item="itemID")
+    # train_d, test_d = python_stratified_split(df_default, ratio=0.75)
+    # Training data with at least columns (col_user, col_item, col_rating).
+    data_g = ImplicitCF(train=train_g, test=test_g, seed=SEED, col_user="userID", col_item="itemID")
+    # data_d = ImplicitCF(train=train_d, test=test_d, seed=SEED)
+    # df_amazon.to_latex("ergebnisse.tex", c)
     hparams = prepare_hparams(yaml_file,
                               n_layers=3,
                               batch_size=BATCH_SIZE,
@@ -54,21 +97,21 @@ if __name__ == '__main__':
                               eval_epoch=5,
                               top_k=TOP_K,
                               )
-    model = LightGCN(hparams, data, seed=SEED)
+    model = LightGCN(hparams, data_g, seed=SEED)
 
     with Timer() as train_time:
         model.fit()
 
     print("Took {} seconds for training.".format(train_time.interval))
 
-    topk_scores = model.recommend_k_items(test, top_k=TOP_K, remove_seen=True)
+    topk_scores = model.recommend_k_items(test_g, top_k=TOP_K, remove_seen=True)
 
     topk_scores.head()
 
-    eval_map = map_at_k(test, topk_scores, k=TOP_K)
-    eval_ndcg = ndcg_at_k(test, topk_scores, k=TOP_K)
-    eval_precision = precision_at_k(test, topk_scores, k=TOP_K)
-    eval_recall = recall_at_k(test, topk_scores, k=TOP_K)
+    eval_map = map_at_k(test_g, topk_scores, k=TOP_K)
+    eval_ndcg = ndcg_at_k(test_g, topk_scores, k=TOP_K)
+    eval_precision = precision_at_k(test_g, topk_scores, k=TOP_K)
+    eval_recall = recall_at_k(test_g, topk_scores, k=TOP_K)
 
     print("MAP:\t%f" % eval_map,
           "NDCG:\t%f" % eval_ndcg,
